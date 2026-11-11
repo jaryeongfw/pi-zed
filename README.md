@@ -69,15 +69,18 @@ Add to `~/.config/zed/settings.json`:
 - **`node` not found** → re-run `./scripts/setup.sh` (uses `which node` of the current shell)
 - **No model / auth errors** → run `pi` in a terminal once and configure a provider
 
-## Status (MVP)
+## Features
 
-- [x] initialize / session/new / session/prompt / session/cancel
-- [x] text + thinking streaming
-- [x] tool_call / tool_call_update (with file locations)
-- [ ] edit diffs (structured `diff` content)
-- [ ] session/load (resume pi sessions)
-- [ ] slash commands / skills (`available_commands_update`)
-- [ ] permission requests, image prompts, model selection
+- initialize / session/new / session/prompt / session/cancel
+- Text + thinking streaming, tool calls with file locations, live bash output
+- **Edit diffs** — `edit` / `write` show a full-file diff in Zed (file snapshotted right before the tool runs)
+- **Session history** — `session/list` + `session/load`: resume pi sessions (also ones started in the pi TUI) with the conversation replayed
+- **Slash commands** (`available_commands_update`): extension commands, prompt templates, `/skill:name`, plus adapter built-ins:
+  `/compact [instructions]`, `/name <name>`, `/session`, `/reload`
+- **Model & thinking selectors** in the agent panel footer (session config options); choices are saved as pi defaults like the TUI
+- Context usage / cost (`usage_update`), image prompts
+
+Not yet: permission requests, extension UI dialogs (`select`/`confirm`/`input`).
 
 ## License
 

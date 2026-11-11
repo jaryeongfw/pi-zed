@@ -1,6 +1,6 @@
 {
   "name": "pi-zed",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "In-process ACP adapter for pi (Zed external agent)",
   "type": "module",
   "bin": {

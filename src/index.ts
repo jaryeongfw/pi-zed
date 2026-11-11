@@ -6,56 +6,39 @@
  * pi runs inside this same process through the SDK, so no `pi --mode rpc` child.
  */
 import { Readable, Writable } from "node:stream";
-import path from "node:path";
-import { agent, methods, ndJsonStream, PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
-import type { SessionUpdate, StopReason, ToolKind } from "@agentclientprotocol/sdk";
-import { createAgentSession, type AgentSession } from "@earendil-works/pi-coding-agent";
+import { fileURLToPath } from "node:url";
+import { agent, methods, ndJsonStream, PROTOCOL_VERSION, RequestError } from "@agentclientprotocol/sdk";
+import type { AgentContext, ContentBlock, SessionInfo } from "@agentclientprotocol/sdk";
+import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
+import { PiAcpSession } from "./pi-session.js";
 
 // stdout belongs to the ACP protocol; send any stray logs to stderr.
 console.log = console.info = console.debug = (...args: unknown[]) => console.error(...args);
 
-interface Entry {
-	session: AgentSession;
-	cwd: string;
-}
-const sessions = new Map<string, Entry>();
+const VERSION = "0.2.0";
+const LIST_PAGE_SIZE = 50;
 
-const TOOL_KINDS: Record<string, ToolKind> = {
-	read: "read",
-	ls: "read",
-	edit: "edit",
-	write: "edit",
-	bash: "execute",
-	grep: "search",
-	find: "search",
-};
+const sessions = new Map<string, PiAcpSession>();
 
-function toolTitle(name: string, args: any): string {
-	const target = args?.path ?? args?.command ?? args?.pattern;
-	return target ? `${name}: ${String(target).slice(0, 120)}` : name;
+function getSession(sessionId: string): PiAcpSession {
+	const entry = sessions.get(sessionId);
+	if (!entry) throw RequestError.resourceNotFound(sessionId);
+	return entry;
 }
 
-function toolLocations(args: any, cwd: string) {
-	if (typeof args?.path !== "string") return undefined;
-	return [{ path: path.resolve(cwd, args.path) }];
-}
-
-function resultText(result: any): string {
-	const content = result?.content;
-	if (Array.isArray(content)) {
-		return content
-			.filter((c: any) => c?.type === "text")
-			.map((c: any) => c.text)
-			.join("\n");
+function uriToPath(uri: string): string {
+	try {
+		return uri.startsWith("file://") ? fileURLToPath(uri) : uri;
+	} catch {
+		return uri;
 	}
-	return typeof result === "string" ? result : "";
 }
 
-function promptText(blocks: Array<any>): string {
+function promptText(blocks: ContentBlock[]): string {
 	return blocks
 		.map((b) => {
 			if (b.type === "text") return b.text;
-			if (b.type === "resource_link") return `@${b.uri}`;
+			if (b.type === "resource_link") return `@${uriToPath(b.uri)}`;
 			if (b.type === "resource" && "text" in b.resource) {
 				return `<context uri="${b.resource.uri}">\n${b.resource.text}\n</context>`;
 			}
@@ -65,80 +48,92 @@ function promptText(blocks: Array<any>): string {
 		.join("\n");
 }
 
+function promptImages(blocks: ContentBlock[]) {
+	return blocks.flatMap((b) => (b.type === "image" ? [{ type: "image" as const, data: b.data, mimeType: b.mimeType }] : []));
+}
+
+/** Registers a session and announces its commands once Zed knows the session id. */
+function register(entry: PiAcpSession) {
+	sessions.get(entry.id)?.dispose();
+	sessions.set(entry.id, entry);
+	// Session updates are only accepted after the session/new response has been delivered.
+	setTimeout(() => {
+		void entry.sendAvailableCommands();
+		void entry.sendUsage();
+	}, 0);
+}
+
+async function findSessionFile(cwd: string, sessionId: string): Promise<string | undefined> {
+	const local = SessionManager.findById(cwd, sessionId);
+	if (local) return local;
+	return (await SessionManager.listAll()).find((s) => s.id === sessionId)?.path;
+}
+
+let client: AgentContext;
+
 const app = agent({ name: "pi-zed" })
 	.onRequest(methods.agent.initialize, () => ({
 		protocolVersion: PROTOCOL_VERSION,
 		agentCapabilities: {
-			loadSession: false,
-			promptCapabilities: { embeddedContext: true, image: false, audio: false },
+			loadSession: true,
+			promptCapabilities: { embeddedContext: true, image: true, audio: false },
+			sessionCapabilities: { list: {}, close: {} },
 		},
-		agentInfo: { name: "pi-zed", version: "0.1.0" },
+		agentInfo: { name: "pi-zed", title: "pi", version: VERSION },
 		authMethods: [],
 	}))
 	.onRequest(methods.agent.session.new, async ({ params }) => {
 		const { session } = await createAgentSession({ cwd: params.cwd });
-		const sessionId = session.sessionManager.getSessionId?.() ?? crypto.randomUUID();
-		sessions.set(sessionId, { session, cwd: params.cwd });
-		return { sessionId };
+		const entry = await PiAcpSession.create(session, params.cwd, client);
+		register(entry);
+		return { sessionId: entry.id, configOptions: entry.configOptions() };
 	})
-	.onRequest(methods.agent.session.prompt, async ({ params, client }) => {
-		const entry = sessions.get(params.sessionId);
-		if (!entry) throw new Error(`Unknown session: ${params.sessionId}`);
-		const { session, cwd } = entry;
-
-		const send = (update: SessionUpdate) =>
-			client.notify(methods.client.session.update, { sessionId: params.sessionId, update });
-
-		let cancelled = false;
-		const unsubscribe = session.subscribe((event) => {
-			switch (event.type) {
-				case "message_update": {
-					const e = event.assistantMessageEvent;
-					if (e.type === "text_delta") {
-						void send({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: e.delta } });
-					} else if (e.type === "thinking_delta") {
-						void send({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: e.delta } });
-					}
-					break;
-				}
-				case "tool_execution_start":
-					void send({
-						sessionUpdate: "tool_call",
-						toolCallId: event.toolCallId,
-						title: toolTitle(event.toolName, event.args),
-						kind: TOOL_KINDS[event.toolName] ?? "other",
-						status: "in_progress",
-						rawInput: event.args,
-						locations: toolLocations(event.args, cwd),
-					});
-					break;
-				case "tool_execution_end":
-					void send({
-						sessionUpdate: "tool_call_update",
-						toolCallId: event.toolCallId,
-						status: event.isError ? "failed" : "completed",
-						content: [{ type: "content", content: { type: "text", text: resultText(event.result) } }],
-					});
-					break;
-				case "agent_settled":
-					cancelled ||= event.aborted;
-					break;
-			}
-		});
-
-		try {
-			await session.prompt(promptText(params.prompt));
-			await session.waitForIdle();
-		} catch (err) {
-			if (!cancelled) throw err;
-		} finally {
-			unsubscribe();
+	.onRequest(methods.agent.session.load, async ({ params }) => {
+		let entry = sessions.get(params.sessionId);
+		if (!entry) {
+			const file = await findSessionFile(params.cwd, params.sessionId);
+			if (!file) throw RequestError.resourceNotFound(params.sessionId);
+			const { session } = await createAgentSession({
+				cwd: params.cwd,
+				sessionManager: SessionManager.open(file, undefined, params.cwd),
+			});
+			entry = await PiAcpSession.create(session, params.cwd, client);
 		}
-		const stopReason: StopReason = cancelled ? "cancelled" : "end_turn";
+		// ACP: the whole conversation is streamed back before the load response.
+		await entry.replayHistory();
+		register(entry);
+		return { configOptions: entry.configOptions() };
+	})
+	.onRequest(methods.agent.session.list, async ({ params }) => {
+		const all = params.cwd ? await SessionManager.list(params.cwd) : await SessionManager.listAll();
+		all.sort((a, b) => b.modified.getTime() - a.modified.getTime());
+		const offset = Number(params.cursor ?? 0) || 0;
+		const page = all.slice(offset, offset + LIST_PAGE_SIZE);
+		const result: SessionInfo[] = page.map((s) => ({
+			sessionId: s.id,
+			cwd: s.cwd || params.cwd || "",
+			title: s.name || s.firstMessage.replace(/\s+/g, " ").trim().slice(0, 100) || null,
+			updatedAt: s.modified.toISOString(),
+		}));
+		const next = offset + LIST_PAGE_SIZE;
+		return { sessions: result, nextCursor: next < all.length ? String(next) : null };
+	})
+	.onRequest(methods.agent.session.close, async ({ params }) => {
+		sessions.get(params.sessionId)?.dispose();
+		sessions.delete(params.sessionId);
+		return {};
+	})
+	.onRequest(methods.agent.session.setConfigOption, async ({ params }) => {
+		const configOptions = await getSession(params.sessionId).setConfigOption(params.configId, params.value);
+		return { configOptions };
+	})
+	.onRequest(methods.agent.session.prompt, async ({ params }) => {
+		const entry = getSession(params.sessionId);
+		const stopReason = await entry.prompt(promptText(params.prompt), promptImages(params.prompt));
 		return { stopReason };
 	})
 	.onNotification(methods.agent.session.cancel, async ({ params }) => {
-		await sessions.get(params.sessionId)?.session.abort();
+		await sessions.get(params.sessionId)?.cancel();
 	});
 
 const stream = ndJsonStream(
@@ -146,9 +141,10 @@ const stream = ndJsonStream(
 	Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>,
 );
 const connection = app.connect(stream);
+client = connection.client;
 
 const shutdown = () => {
-	for (const { session } of sessions.values()) session.dispose();
+	for (const entry of sessions.values()) entry.dispose();
 	process.exit(0);
 };
 process.on("SIGTERM", shutdown);
