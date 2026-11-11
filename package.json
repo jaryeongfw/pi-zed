@@ -1,0 +1,26 @@
+{
+  "name": "pi-zed",
+  "version": "0.1.0",
+  "description": "In-process ACP adapter for pi (Zed external agent)",
+  "type": "module",
+  "bin": {
+    "pi-zed": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^2.6.0",
+    "@earendil-works/pi-coding-agent": "^1.5.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}
