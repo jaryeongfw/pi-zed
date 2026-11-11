@@ -81,4 +81,4 @@ Add to `~/.config/zed/settings.json`:
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
