@@ -1,13 +1,15 @@
 // Minimal ACP client smoke test: node scripts/smoke.mjs [prompt]
 // Advertises Zed-like client capabilities and answers fs/* and elicitation requests.
 //   SMOKE_CAPS=none  → advertise no client capabilities
+//   SMOKE_ENTRY=path → test another build (default: dist/index.js)
 import fs from "node:fs";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 
 const t0 = Date.now();
 setTimeout(() => { console.error("✗ timeout"); process.exit(1); }, Number(process.env.SMOKE_TIMEOUT_MS ?? 120000)).unref();
-const child = spawn("node", [new URL("../dist/index.js", import.meta.url).pathname], { stdio: ["pipe", "pipe", "inherit"] });
+const entry = process.env.SMOKE_ENTRY ?? new URL("../dist/index.js", import.meta.url).pathname;
+const child = spawn("node", [entry], { stdio: ["pipe", "pipe", "inherit"] });
 const pending = new Map();
 let id = 0;
 const write = (msg) => child.stdin.write(JSON.stringify({ jsonrpc: "2.0", ...msg }) + "\n");
