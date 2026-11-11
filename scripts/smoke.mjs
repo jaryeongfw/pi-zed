@@ -2,6 +2,7 @@
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 const t0 = Date.now();
+setTimeout(() => { console.error("✗ timeout"); process.exit(1); }, Number(process.env.SMOKE_TIMEOUT_MS ?? 120000)).unref();
 const child = spawn("node", [new URL("../dist/index.js", import.meta.url).pathname], { stdio: ["pipe", "pipe", "inherit"] });
 const pending = new Map();
 let id = 0;
@@ -18,3 +19,4 @@ const s = await rpc("session/new", { cwd: process.cwd(), mcpServers: [] });
 log("session/new", s);
 if (process.argv[2]) log("\nprompt", await rpc("session/prompt", { sessionId: s.result.sessionId, prompt: [{ type: "text", text: process.argv[2] }] }));
 child.kill();
+process.exit(0);

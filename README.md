@@ -41,3 +41,15 @@ Open the Agent panel → `+` → **pi-zed**.
 - [ ] session/load (resume pi sessions)
 - [ ] slash commands / skills (`available_commands_update`)
 - [ ] permission requests, image prompts, model selection
+
+## One-shot setup
+
+```bash
+./scripts/setup.sh              # install → build → smoke test → register in Zed
+./scripts/setup.sh --skip-test  # skip the smoke test
+./scripts/setup.sh --uninstall  # remove from Zed settings
+```
+
+- Edits `~/.config/zed/settings.json` in place (comments preserved) and writes a timestamped `.bak-*` first.
+- Uses the absolute `node` path, since Zed (GUI app) may not see nvm's PATH. Re-run after switching Node versions.
+- Override target file with `ZED_SETTINGS=/path/to/settings.json`.
