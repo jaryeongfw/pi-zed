@@ -35,7 +35,8 @@ Then in Zed: Agent panel → `+` → **pi-zed**.
 | `./scripts/setup.sh --skip-test` | Same, without the smoke test |
 | `./scripts/setup.sh --uninstall` | Remove `pi-zed` from Zed settings |
 | `node scripts/configure-zed.mjs --dry-run` | Print the resulting settings without writing |
-| `node scripts/smoke.mjs "prompt"` | ACP smoke test without Zed (sends a real prompt if given) |
+| `node scripts/smoke.mjs "prompt"` | ACP smoke test without Zed, advertising Zed-like client capabilities (sends a real prompt if given; `SMOKE_CAPS=none` for a bare client) |
+| `node dist/index.js --pi [args]` | Run the regular pi TUI (used by Zed's login flow) |
 
 Notes:
 
@@ -67,20 +68,27 @@ Add to `~/.config/zed/settings.json`:
 
 - **Agent doesn't start / errors in panel** → Zed command palette: `dev: open acp logs`
 - **`node` not found** → re-run `./scripts/setup.sh` (uses `which node` of the current shell)
-- **No model / auth errors** → run `pi` in a terminal once and configure a provider
+- **No model / auth errors** → use **Log in with pi** in the agent panel (or run `pi` in a terminal) and `/login` to a provider
+- **Edits behave oddly with format-on-save** → set `PI_ZED_FS=0` in the agent's `env` to write files directly instead of through Zed buffers
 
 ## Features
 
 - initialize / session/new / session/prompt / session/cancel
-- Text + thinking streaming, tool calls with file locations, live bash output
+- Text + thinking streaming, tool calls with file locations
 - **Edit diffs** — `edit` / `write` show a full-file diff in Zed (file snapshotted right before the tool runs)
-- **Session history** — `session/list` + `session/load`: resume pi sessions (also ones started in the pi TUI) with the conversation replayed
+- **Zed buffers** — `read` / `write` / `edit` go through Zed (`fs/*`): reads see unsaved changes, writes show up in Zed's agent review (keep / reject). Falls back to disk outside the project. Opt out: `PI_ZED_FS=0`
+- **Terminal output** — `bash` output streams into an embedded Zed terminal (ANSI colors, exit code). pi still runs the command (same shell, settings, timeouts). Opt out: `PI_ZED_TERMINAL=0`
+- **Extension UI** — `ctx.ui.select` / `confirm` / `input` / `editor` become Zed forms (elicitation); `notify` and MCP/retry messages become notices; `setStatus` shows up in `/session`. TUI-only UI (widgets, custom components) is ignored
+- **Login** — with no usable model, Zed offers **Log in with pi**, which opens the pi TUI in a terminal for `/login`
+- **MCP** — pi's built-in MCP / codemode / tool-search extensions are loaded like in the CLI (`mcp.json`, `/mcp`), and MCP servers configured in Zed (stdio, HTTP) are passed to pi. Nested tool calls (codemode scripts) are shown as `↳` entries
+- **Compaction** — shown with Zed's compaction UI (live and when replaying history)
+- **Session history** — `session/list` + `session/load`: resume pi sessions (also ones started in the pi TUI) with the conversation replayed; deleting a thread in Zed deletes the pi session file (moved to the Trash when `trash` exists)
 - **Slash commands** (`available_commands_update`): extension commands, prompt templates, `/skill:name`, plus adapter built-ins:
   `/compact [instructions]`, `/name <name>`, `/session`, `/reload`
 - **Model & thinking selectors** in the agent panel footer (session config options); choices are saved as pi defaults like the TUI
 - Context usage / cost (`usage_update`), image prompts
 
-Not yet: permission requests, extension UI dialogs (`select`/`confirm`/`input`).
+Not supported: tool permission prompts (pi runs tools without asking, as in the TUI), session fork / rename from Zed (Zed 1.27 doesn't send `session/fork` / `session/set_title` to external agents), ACP subagent threads (behind a Zed beta flag).
 
 ## License
 

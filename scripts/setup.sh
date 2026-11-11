@@ -26,7 +26,7 @@ chmod +x dist/index.js
 # 3. 스모크 테스트 (모델 호출 없음: initialize + session/new 만)
 if [[ "${1:-}" != "--skip-test" ]]; then
   echo "• smoke test"
-  if ! out=$(SMOKE_TIMEOUT_MS=30000 node scripts/smoke.mjs 2>&1); then
+  if ! out=$(SMOKE_CAPS=none SMOKE_TIMEOUT_MS=30000 node scripts/smoke.mjs 2>&1); then
     echo "$out"; echo "✗ 스모크 테스트 실패"; exit 1
   fi
   grep -q '"sessionId"' <<<"$out" || { echo "$out"; echo "✗ 세션 생성 실패"; exit 1; }

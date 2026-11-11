@@ -21,12 +21,26 @@ function contentBlocks(content: unknown, mapText: (t: string) => string = (t) =>
 	});
 }
 
-export async function replayBranch(entries: SessionEntry[], cwd: string, send: Send): Promise<void> {
+export interface ReplayOptions {
+	/** Client supports `compaction_update` (session.compaction capability). */
+	compactionUpdates?: boolean;
+}
+
+export async function replayBranch(entries: SessionEntry[], cwd: string, send: Send, options: ReplayOptions = {}): Promise<void> {
 	// Tool calls seen in assistant messages, so results can be rendered with their arguments.
 	const calls = new Map<string, { name: string; args: any }>();
 
 	for (const entry of entries) {
 		if (entry.type === "compaction") {
+			if (options.compactionUpdates) {
+				await send({
+					sessionUpdate: "compaction_update",
+					compactionId: entry.id,
+					status: "completed",
+					summary: entry.summary ? [{ type: "text", text: entry.summary }] : null,
+				});
+				continue;
+			}
 			await send({
 				sessionUpdate: "agent_message_chunk",
 				content: { type: "text", text: `\n\n_— context compacted (${entry.tokensBefore} tokens summarized) —_\n\n` },

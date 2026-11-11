@@ -1,6 +1,5 @@
 /** One ACP session backed by one in-process pi AgentSession. */
 import type {
-	AgentContext,
 	AvailableCommand,
 	SessionConfigOption,
 	SessionConfigSelectGroup,
@@ -8,6 +7,7 @@ import type {
 } from "@agentclientprotocol/sdk";
 import { methods } from "@agentclientprotocol/sdk";
 import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import { type Host, supportsCompaction, supportsNotices, useTerminalDisplay } from "./host.js";
 import { replayBranch } from "./replay.js";
 import {
 	argsDiff,
@@ -21,6 +21,7 @@ import {
 	toolLocations,
 	toolTitle,
 } from "./tools.js";
+import { createUiContext, type UiSession } from "./ui-context.js";
 
 type ThinkingLevel = Parameters<AgentSession["setThinkingLevel"]>[0];
 type Model = NonNullable<AgentSession["model"]>;
@@ -50,38 +51,85 @@ const UPDATE_THROTTLE_MS = 250;
 
 const modelKey = (m: Pick<Model, "provider" | "id">) => `${m.provider}/${m.id}`;
 
-export class PiAcpSession {
+/** Bytes already written to a display-only Zed terminal for a bash tool call. */
+interface TerminalState {
+	sent: string;
+}
+
+const CLEAR_TERMINAL = "\x1b[2J\x1b[3J\x1b[H";
+const toTerminal = (text: string) => text.replace(/\r?\n/g, "\r\n");
+
+export class PiAcpSession implements UiSession {
 	readonly id: string;
+	readonly statuses = new Map<string, string>();
+	readonly ready: Promise<void>;
+	private markReady!: () => void;
+	private isReady = false;
 	private cancelRequested = false;
 	private snapshots = new Map<string, FileSnapshot>();
+	private terminals = new Map<string, TerminalState>();
 	private lastPartialUpdate = new Map<string, number>();
+	private compactionSeq = 0;
+	private compactionId: string | undefined;
 	private unsubscribe: () => void;
 
-	constructor(
+	private constructor(
 		readonly session: AgentSession,
 		readonly cwd: string,
-		private readonly client: AgentContext,
+		private readonly host: Host,
 	) {
 		this.id = session.sessionId;
+		this.ready = new Promise((resolve) => (this.markReady = resolve));
 		this.unsubscribe = session.subscribe((event) => this.onEvent(event));
 	}
 
-	static async create(session: AgentSession, cwd: string, client: AgentContext): Promise<PiAcpSession> {
+	static async create(session: AgentSession, cwd: string, host: Host): Promise<PiAcpSession> {
+		const entry = new PiAcpSession(session, cwd, host);
 		await session.bindExtensions({
+			uiContext: createUiContext(host, entry),
 			mode: "rpc",
 			onError: (err) => console.error(`[pi-zed] extension error (${err.extensionPath}, ${err.event}): ${err.error}`),
 		});
-		return new PiAcpSession(session, cwd, client);
+		return entry;
+	}
+
+	/**
+	 * Zed accepts session/update only once it knows the session id: after the session/new
+	 * response, or right away for session/load. Dialogs and notices wait for this.
+	 */
+	activate() {
+		this.isReady = true;
+		this.markReady();
 	}
 
 	send(update: SessionUpdate): Promise<void> {
-		return this.client.notify(methods.client.session.update, { sessionId: this.id, update }).catch((err) => {
+		if (!this.isReady) return this.ready.then(() => this.send(update));
+		return this.host.client.notify(methods.client.session.update, { sessionId: this.id, update }).catch((err) => {
 			console.error("[pi-zed] failed to send session/update:", err);
 		});
 	}
 
 	private message(text: string) {
 		return this.send({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+	}
+
+	private notice(severity: "info" | "warning" | "error", title: string, description?: string) {
+		if (supportsNotices(this.host)) return this.send({ sessionUpdate: "notice", severity, title, description: description ?? null });
+		const text = `${title}${description ? ` — ${description}` : ""}`;
+		return this.message(severity === "info" ? `\n\n_${text}_\n\n` : `\n\n**${text}**\n\n`);
+	}
+
+	/** Streams new bash output into the display-only terminal (clears it when the tail was truncated). */
+	private terminalOutput(toolCallId: string, text: string) {
+		const term = this.terminals.get(toolCallId);
+		if (!term || text === term.sent) return;
+		const data = text.startsWith(term.sent) ? text.slice(term.sent.length) : CLEAR_TERMINAL + text;
+		term.sent = text;
+		return this.send({
+			sessionUpdate: "tool_call_update",
+			toolCallId,
+			_meta: { terminal_output: { terminal_id: toolCallId, data: toTerminal(data) } },
+		});
 	}
 
 	// ---------------------------------------------------------------- events
@@ -108,7 +156,6 @@ export class PiAcpSession {
 				break;
 			}
 			case "tool_execution_start": {
-				if (event.parentToolCallId) break;
 				const { toolCallId, toolName, args } = event;
 				const mutation = isFileMutation(toolName, args);
 				// Listeners run synchronously before the tool executes: snapshot the original file now.
@@ -116,21 +163,33 @@ export class PiAcpSession {
 					const snapshot = snapshotFile(args, this.cwd);
 					if (snapshot) this.snapshots.set(toolCallId, snapshot);
 				}
+				const terminal = toolName === "bash" && useTerminalDisplay(this.host);
+				if (terminal) this.terminals.set(toolCallId, { sent: "" });
+				const title = toolTitle(toolName, args, this.cwd);
 				void this.send({
 					sessionUpdate: "tool_call",
 					toolCallId,
-					title: toolTitle(toolName, args, this.cwd),
+					// Nested calls (codemode scripts, ctx.executeTool) are shown inline under their parent.
+					title: event.parentToolCallId ? `↳ ${title}` : title,
 					kind: toolKind(toolName),
 					status: "in_progress",
 					rawInput: args,
 					locations: toolLocations(args, this.cwd),
-					content: mutation ? argsDiff(toolName, args, this.cwd) : undefined,
+					content: mutation
+						? argsDiff(toolName, args, this.cwd)
+						: terminal
+							? [{ type: "terminal", terminalId: toolCallId }]
+							: undefined,
+					_meta: terminal ? { terminal_info: { terminal_id: toolCallId, cwd: this.cwd } } : undefined,
 				});
 				break;
 			}
 			case "tool_execution_update": {
-				if (event.parentToolCallId) break;
 				const text = resultText(event.partialResult);
+				if (this.terminals.has(event.toolCallId)) {
+					void this.terminalOutput(event.toolCallId, text);
+					break;
+				}
 				if (!text || isFileMutation(event.toolName, event.args)) break;
 				const now = Date.now();
 				if (now - (this.lastPartialUpdate.get(event.toolCallId) ?? 0) < UPDATE_THROTTLE_MS) break;
@@ -143,11 +202,29 @@ export class PiAcpSession {
 				break;
 			}
 			case "tool_execution_end": {
-				if (event.parentToolCallId) break;
 				const { toolCallId, toolName, isError, result } = event;
 				const snapshot = this.snapshots.get(toolCallId);
 				this.snapshots.delete(toolCallId);
 				this.lastPartialUpdate.delete(toolCallId);
+				if (this.terminals.has(toolCallId)) {
+					void this.terminalOutput(toolCallId, resultText(result));
+					this.terminals.delete(toolCallId);
+					const exitCode = result?.structuredContent?.exit_code;
+					void this.send({
+						sessionUpdate: "tool_call_update",
+						toolCallId,
+						status: isError ? "failed" : "completed",
+						rawOutput: result?.details,
+						_meta: {
+							terminal_exit: {
+								terminal_id: toolCallId,
+								exit_code: typeof exitCode === "number" ? exitCode : isError ? 1 : 0,
+								signal: null,
+							},
+						},
+					});
+					break;
+				}
 				const diff = !isError && snapshot ? snapshotDiff(snapshot) : undefined;
 				void this.send({
 					sessionUpdate: "tool_call_update",
@@ -165,15 +242,38 @@ export class PiAcpSession {
 				void this.send({ sessionUpdate: "session_info_update", title: event.name ?? null });
 				break;
 			case "compaction_start":
-				void this.message(`\n\n_Compacting context (${event.reason})…_\n\n`);
+				if (supportsCompaction(this.host)) {
+					this.compactionId = `compaction-${Date.now()}-${++this.compactionSeq}`;
+					void this.send({ sessionUpdate: "compaction_update", compactionId: this.compactionId, status: "in_progress" });
+				} else {
+					void this.message(`\n\n_Compacting context (${event.reason})…_\n\n`);
+				}
 				break;
 			case "compaction_end":
-				if (event.errorMessage) void this.message(`\n\n**Compaction failed:** ${event.errorMessage}\n\n`);
-				else if (event.result) void this.message(`_Context compacted (${event.result.tokensBefore} tokens summarized)._\n\n`);
+				if (this.compactionId) {
+					const compactionId = this.compactionId;
+					this.compactionId = undefined;
+					if (event.aborted) {
+						void this.send({ sessionUpdate: "compaction_update", compactionId, status: "cancelled" });
+					} else if (event.errorMessage || !event.result) {
+						void this.send({ sessionUpdate: "compaction_update", compactionId, status: "failed", error: event.errorMessage ?? null });
+					} else {
+						void this.send({
+							sessionUpdate: "compaction_update",
+							compactionId,
+							status: "completed",
+							summary: [{ type: "text", text: event.result.summary }],
+						});
+					}
+				} else if (event.errorMessage) {
+					void this.message(`\n\n**Compaction failed:** ${event.errorMessage}\n\n`);
+				} else if (event.result) {
+					void this.message(`_Context compacted (${event.result.tokensBefore} tokens summarized)._\n\n`);
+				}
 				void this.sendUsage();
 				break;
 			case "auto_retry_start":
-				void this.message(`\n\n_Retrying (${event.attempt}/${event.maxAttempts}): ${event.errorMessage}_\n\n`);
+				void this.notice("warning", `Retrying (${event.attempt}/${event.maxAttempts})`, event.errorMessage);
 				break;
 			case "agent_settled":
 				void this.sendUsage();
@@ -217,10 +317,15 @@ export class PiAcpSession {
 		const args = rest.trim();
 		switch (name) {
 			case "compact": {
+				const seq = this.compactionSeq;
 				try {
 					await this.session.compact(args || undefined);
 				} catch (err: any) {
-					if (!this.cancelRequested) await this.message(`**Compaction failed:** ${err?.message ?? err}`);
+					// A compaction that started already reported its failure through compaction_update.
+					const reported = supportsCompaction(this.host) && this.compactionSeq !== seq;
+					if (!this.cancelRequested && !reported) {
+						await this.message(`**Compaction failed:** ${err?.message ?? err}`);
+					}
 				}
 				return true;
 			}
@@ -262,6 +367,10 @@ export class PiAcpSession {
 		if (usage) {
 			const pct = usage.percent == null ? "?" : `${usage.percent.toFixed(1)}%`;
 			lines.push(`- Context: ${usage.tokens?.toLocaleString() ?? "?"} / ${usage.contextWindow.toLocaleString()} (${pct})`);
+		}
+		if (this.statuses.size > 0) {
+			lines.push("", "**Extension status**");
+			for (const [key, text] of this.statuses) lines.push(`- ${key}: ${text}`);
 		}
 		return lines.join("\n");
 	}
@@ -373,7 +482,9 @@ export class PiAcpSession {
 	}
 
 	replayHistory() {
-		return replayBranch(this.session.sessionManager.getBranch(), this.cwd, (update) => this.send(update));
+		return replayBranch(this.session.sessionManager.getBranch(), this.cwd, (update) => this.send(update), {
+			compactionUpdates: supportsCompaction(this.host),
+		});
 	}
 
 	dispose() {
