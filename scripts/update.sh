@@ -47,7 +47,7 @@ if (( behind == 0 )); then
   fi
   echo "• 재빌드합니다 (--force 또는 dist 없음)"
 else
-  echo "• 업데이트 $behind개 커밋:"
+  echo "• 업데이트 ${behind}개 커밋:"
   git log --oneline --no-decorate "HEAD..$upstream" | sed 's/^/    /'
   (( check )) && exit 0
 fi

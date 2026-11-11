@@ -34,6 +34,7 @@ Then in Zed: Agent panel → `+` → **pi-zed**.
 | `./scripts/setup.sh` | Install → build → smoke test → register in Zed |
 | `./scripts/setup.sh --skip-test` | Same, without the smoke test |
 | `./scripts/setup.sh --uninstall` | Remove `pi-zed` from Zed settings |
+| `./scripts/update.sh` | Update to the latest version (see [Updating](#updating)) |
 | `node scripts/configure-zed.mjs --dry-run` | Print the resulting settings without writing |
 | `node scripts/smoke.mjs "prompt"` | ACP smoke test without Zed, advertising Zed-like client capabilities (sends a real prompt if given; `SMOKE_CAPS=none` for a bare client) |
 | `node dist/index.js --pi [args]` | Run the regular pi TUI (used by Zed's login flow) |
@@ -43,6 +44,16 @@ Notes:
 - Edits `~/.config/zed/settings.json` in place (comments/formatting preserved) and writes a timestamped `settings.json.bak-*` first. Idempotent; uninstall also drops an empty `agent_servers`.
 - Registers the absolute `node` path, since Zed (a GUI app) may not see nvm's PATH. **Re-run after switching Node versions.**
 - Target another settings file with `ZED_SETTINGS=/path/to/settings.json`.
+
+## Updating
+
+```bash
+./scripts/update.sh          # pull → deps (if changed) → build → smoke test → swap → re-register
+./scripts/update.sh --check  # only show pending commits
+./scripts/update.sh --force  # rebuild even when already up to date
+```
+
+No uninstall needed. The new build goes to `dist.next/` and only replaces `dist/` after it builds and passes the smoke test. If anything fails, the checkout and dependencies are rolled back and the current install keeps working. `npm install` only runs when `package.json` / `package-lock.json` changed. Refuses to run with uncommitted changes. Restart Zed afterwards (running pi-zed processes keep the old code).
 
 ## Manual setup
 

@@ -37,4 +37,4 @@ node scripts/configure-zed.mjs
 
 echo
 echo "완료! Zed Agent 패널 → '+' → pi-zed 선택 (Zed가 켜져 있으면 설정은 자동 반영됩니다)."
-echo "제거: ./scripts/setup.sh --uninstall"
+echo "업데이트: ./scripts/update.sh   제거: ./scripts/setup.sh --uninstall"
