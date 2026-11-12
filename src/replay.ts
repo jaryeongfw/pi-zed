@@ -5,7 +5,8 @@ import { argsDiff, fence, isFileMutation, resultText, textContent, toolKind, too
 
 type Send = (update: SessionUpdate) => Promise<void>;
 
-function userText(text: string): string {
+/** User message text as typed: skill invocations are shown as `/skill:name args`. */
+export function userText(text: string): string {
 	const skill = parseSkillBlock(text);
 	if (!skill) return text;
 	return `/skill:${skill.name}${skill.userMessage ? ` ${skill.userMessage}` : ""}`;
@@ -25,14 +26,14 @@ export interface ReplayOptions {
 	/** Client supports `compaction_update` (session.compaction capability). */
 	compactionUpdates?: boolean;
 	/** Renders a custom entry (extension entry renderer) as a session update, or undefined to skip it. */
-	customEntry?: (entry: SessionEntry) => SessionUpdate | undefined;
+	customEntry?: (entry: SessionEntry, index: number, entries: SessionEntry[]) => SessionUpdate | undefined;
 }
 
 export async function replayBranch(entries: SessionEntry[], cwd: string, send: Send, options: ReplayOptions = {}): Promise<void> {
 	// Tool calls seen in assistant messages, so results can be rendered with their arguments.
 	const calls = new Map<string, { name: string; args: any }>();
 
-	for (const entry of entries) {
+	for (const [index, entry] of entries.entries()) {
 		if (entry.type === "compaction") {
 			if (options.compactionUpdates) {
 				await send({
@@ -50,7 +51,7 @@ export async function replayBranch(entries: SessionEntry[], cwd: string, send: S
 			continue;
 		}
 		if (entry.type === "custom") {
-			const update = options.customEntry?.(entry);
+			const update = options.customEntry?.(entry, index, entries);
 			if (update) await send(update);
 			continue;
 		}
