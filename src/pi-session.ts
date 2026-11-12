@@ -7,6 +7,7 @@ import type {
 } from "@agentclientprotocol/sdk";
 import { methods } from "@agentclientprotocol/sdk";
 import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import { customEntryUpdate } from "./custom-entries.js";
 import { type Host, supportsCompaction, supportsNotices, useTerminalDisplay } from "./host.js";
 import { replayBranch } from "./replay.js";
 import {
@@ -47,9 +48,19 @@ const BUILTIN_COMMANDS: AvailableCommand[] = [
 	{ name: "reload", description: "Reload extensions, skills, prompt templates and context files" },
 ];
 
+/** Meaning of the thinking levels of virtual models, which are inputs to the router rather than reasoning budgets. */
+const VIRTUAL_THINKING_LABELS: Record<string, Record<string, string>> = {
+	"router/auto": { low: "Low · economy", medium: "Medium · balanced", high: "High · quality" },
+};
+
 const UPDATE_THROTTLE_MS = 250;
 
 const modelKey = (m: Pick<Model, "provider" | "id">) => `${m.provider}/${m.id}`;
+
+/** Virtual models are catalog entries with api "pi-virtual" that route each request to a physical model. */
+const isVirtual = (m: Pick<Model, "api">) => m.api === "pi-virtual";
+const isVirtualGroup = (group: SessionConfigSelectGroup, models: readonly Model[]) =>
+	models.some((m) => m.provider === group.group && isVirtual(m));
 
 /** Bytes already written to a display-only Zed terminal for a bash tool call. */
 interface TerminalState {
@@ -71,6 +82,8 @@ export class PiAcpSession implements UiSession {
 	private lastPartialUpdate = new Map<string, number>();
 	private compactionSeq = 0;
 	private compactionId: string | undefined;
+	/** Custom entries (extension cards) already shown, by entry id. */
+	private shownEntries = new Set<string>();
 	private unsubscribe: () => void;
 
 	private constructor(
@@ -277,6 +290,8 @@ export class PiAcpSession implements UiSession {
 				break;
 			case "agent_settled":
 				void this.sendUsage();
+				// Extensions append their cards in their own agent_settled handlers, which may run after this one.
+				setTimeout(() => this.flushCustomEntries(), 0);
 				break;
 		}
 	}
@@ -296,12 +311,23 @@ export class PiAcpSession implements UiSession {
 		} catch (err) {
 			if (!this.cancelRequested) throw err;
 		}
+		this.flushCustomEntries();
 		// Extension commands may have changed resources, model or thinking level.
 		if (text.startsWith("/")) {
 			void this.sendAvailableCommands();
 			void this.sendConfigOptions();
 		}
 		return this.cancelRequested ? ("cancelled" as const) : ("end_turn" as const);
+	}
+
+	/** Shows custom entries added to the branch since the last call (e.g. llm-router's query card). */
+	private flushCustomEntries() {
+		for (const entry of this.session.sessionManager.getBranch()) {
+			if (entry.type !== "custom" || this.shownEntries.has(entry.id)) continue;
+			this.shownEntries.add(entry.id);
+			const update = customEntryUpdate(this.host, this.session, entry);
+			if (update) void this.send(update);
+		}
 	}
 
 	async cancel() {
@@ -356,10 +382,12 @@ export class PiAcpSession implements UiSession {
 		const s = this.session.getSessionStats();
 		const usage = s.contextUsage;
 		const model = this.session.model;
+		const routed = this.session.routedModel;
+		const routedLabel = routed ? ` → \`${modelKey(routed.model)}\`${routed.thinkingLevel ? ` · ${routed.thinkingLevel}` : ""}` : "";
 		const lines = [
 			`**Session** \`${s.sessionId}\`${this.session.sessionName ? ` — ${this.session.sessionName}` : ""}`,
 			s.sessionFile ? `- File: \`${s.sessionFile}\`` : "- File: (in memory)",
-			`- Model: ${model ? `\`${modelKey(model)}\`` : "none"} · thinking: ${this.session.thinkingLevel}`,
+			`- Model: ${model ? `\`${modelKey(model)}\`` : "none"} · thinking: ${this.session.thinkingLevel}${routedLabel}`,
 			`- Messages: ${s.userMessages} user, ${s.assistantMessages} assistant, ${s.toolCalls} tool calls`,
 			`- Tokens: ${s.tokens.input.toLocaleString()} in, ${s.tokens.output.toLocaleString()} out, ${s.tokens.cacheRead.toLocaleString()} cache read, ${s.tokens.cacheWrite.toLocaleString()} cache write`,
 			`- Cost: $${s.cost.toFixed(4)}`,
@@ -430,7 +458,8 @@ export class PiAcpSession implements UiSession {
 				category: "model",
 				type: "select",
 				currentValue: modelKey(current),
-				options: [...groups.values()],
+				// Virtual models (e.g. router/auto) come first: they are the ones that choose a model for you.
+				options: [...groups.values()].sort((a, b) => Number(isVirtualGroup(b, models)) - Number(isVirtualGroup(a, models))),
 			});
 		}
 		const levels = this.session.supportsThinking() ? this.session.getAvailableThinkingLevels() : [];
@@ -441,7 +470,10 @@ export class PiAcpSession implements UiSession {
 				category: "thought_level",
 				type: "select",
 				currentValue: this.session.thinkingLevel,
-				options: levels.map((level) => ({ value: level, name: THINKING_LABELS[level] ?? level })),
+				options: levels.map((level) => ({
+					value: level,
+					name: (current && VIRTUAL_THINKING_LABELS[modelKey(current)]?.[level]) ?? THINKING_LABELS[level] ?? level,
+				})),
 			});
 		}
 		return options;
@@ -484,6 +516,10 @@ export class PiAcpSession implements UiSession {
 	replayHistory() {
 		return replayBranch(this.session.sessionManager.getBranch(), this.cwd, (update) => this.send(update), {
 			compactionUpdates: supportsCompaction(this.host),
+			customEntry: (entry) => {
+				this.shownEntries.add(entry.id);
+				return customEntryUpdate(this.host, this.session, entry);
+			},
 		});
 	}
 

@@ -18,7 +18,7 @@ export interface UiSession {
 type FormContent = Record<string, unknown> | undefined;
 
 /** Plain-text stand-in for pi's TUI theme: every styling method returns its text unchanged. */
-const plainTheme: any = new Proxy(
+export const plainTheme: any = new Proxy(
 	{},
 	{
 		get: (_target, prop) => {

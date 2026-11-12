@@ -97,6 +97,8 @@ Add to `~/.config/zed/settings.json`:
 - **Slash commands** (`available_commands_update`): extension commands, prompt templates, `/skill:name`, plus adapter built-ins:
   `/compact [instructions]`, `/name <name>`, `/session`, `/reload`
 - **Model & thinking selectors** in the agent panel footer (session config options); choices are saved as pi defaults like the TUI
+- **Virtual models / llm-router** — virtual models such as `router/auto` ([llm-router](https://github.com/jaryeongfw/llm-router), installed with `pi install`) are listed first in the model selector, and their thinking levels carry the router's meaning (Low · economy / Medium · balanced / High · quality). `/session` shows the routed model next to the selection (`router/auto · thinking: low → provider/model · off`)
+- **Extension cards** — custom entries drawn by an extension entry renderer (`pi.registerEntryRenderer`, e.g. llm-router's per-query card with tier, model, thinking and usage) are shown as a notice after the turn and when a session is loaded. `/router status` and `/router stats` work as notices; the status line appears in `/session`
 - Context usage / cost (`usage_update`), image prompts
 
 Not supported: tool permission prompts (pi runs tools without asking, as in the TUI), session fork / rename from Zed (Zed 1.27 doesn't send `session/fork` / `session/set_title` to external agents), ACP subagent threads (behind a Zed beta flag).

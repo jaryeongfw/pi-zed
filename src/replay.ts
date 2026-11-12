@@ -24,6 +24,8 @@ function contentBlocks(content: unknown, mapText: (t: string) => string = (t) =>
 export interface ReplayOptions {
 	/** Client supports `compaction_update` (session.compaction capability). */
 	compactionUpdates?: boolean;
+	/** Renders a custom entry (extension entry renderer) as a session update, or undefined to skip it. */
+	customEntry?: (entry: SessionEntry) => SessionUpdate | undefined;
 }
 
 export async function replayBranch(entries: SessionEntry[], cwd: string, send: Send, options: ReplayOptions = {}): Promise<void> {
@@ -45,6 +47,11 @@ export async function replayBranch(entries: SessionEntry[], cwd: string, send: S
 				sessionUpdate: "agent_message_chunk",
 				content: { type: "text", text: `\n\n_— context compacted (${entry.tokensBefore} tokens summarized) —_\n\n` },
 			});
+			continue;
+		}
+		if (entry.type === "custom") {
+			const update = options.customEntry?.(entry);
+			if (update) await send(update);
 			continue;
 		}
 		if (entry.type === "custom_message") {
