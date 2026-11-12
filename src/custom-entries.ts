@@ -5,7 +5,7 @@
  *
  * Each card is labelled with a short preview of the user query it answers, taken from the branch at
  * display time. Extensions such as llm-router deliberately keep query text out of their entries, so
- * the preview is never stored, and it is left out when the entry marks the query as sensitive.
+ * the preview is never stored, and it is shown for every query, sensitive ones included.
  */
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import type { AgentSession, SessionEntry } from "@earendil-works/pi-coding-agent";
@@ -16,15 +16,6 @@ import { plainTheme } from "./ui-context.js";
 const RENDER_WIDTH = 100;
 const ANSI = /\x1b\[[0-9;]*m|\x1b\]8;;[^\x07]*\x07/g;
 const PREVIEW_CHARS = 40;
-const SENSITIVE_PREVIEW = "(sensitive query · preview hidden)";
-
-/**
- * Entry data that marks its query as sensitive (llm-router: routed to a local model, or a sensitive-info
- * rule or suspicion was hit).
- */
-function isSensitive(data: any): boolean {
-	return !!data && typeof data === "object" && (data.tier === "local" || !!data.sensitivity_warning || !!data.tool_result_warnings);
-}
 
 function messageText(content: unknown): string {
 	if (typeof content === "string") return content;
@@ -34,7 +25,6 @@ function messageText(content: unknown): string {
 
 /** One-line preview of the last user message before `branch[index]`, or undefined when there is none. */
 export function queryPreview(branch: readonly SessionEntry[], index: number): string | undefined {
-	if (isSensitive((branch[index] as any)?.data)) return SENSITIVE_PREVIEW;
 	for (let i = index - 1; i >= 0; i--) {
 		const e = branch[i];
 		if (e.type !== "message" || (e.message as any).role !== "user") continue;
