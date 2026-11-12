@@ -7,7 +7,7 @@ import type {
 } from "@agentclientprotocol/sdk";
 import { methods } from "@agentclientprotocol/sdk";
 import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import { customEntryUpdate } from "./custom-entries.js";
+import { customEntryUpdate, queryPreview } from "./custom-entries.js";
 import { type Host, supportsCompaction, supportsNotices, useTerminalDisplay } from "./host.js";
 import { replayBranch } from "./replay.js";
 import {
@@ -322,10 +322,11 @@ export class PiAcpSession implements UiSession {
 
 	/** Shows custom entries added to the branch since the last call (e.g. llm-router's query card). */
 	private flushCustomEntries() {
-		for (const entry of this.session.sessionManager.getBranch()) {
+		const branch = this.session.sessionManager.getBranch();
+		for (const [index, entry] of branch.entries()) {
 			if (entry.type !== "custom" || this.shownEntries.has(entry.id)) continue;
 			this.shownEntries.add(entry.id);
-			const update = customEntryUpdate(this.host, this.session, entry);
+			const update = customEntryUpdate(this.host, this.session, entry, queryPreview(branch, index));
 			if (update) void this.send(update);
 		}
 	}
@@ -516,9 +517,9 @@ export class PiAcpSession implements UiSession {
 	replayHistory() {
 		return replayBranch(this.session.sessionManager.getBranch(), this.cwd, (update) => this.send(update), {
 			compactionUpdates: supportsCompaction(this.host),
-			customEntry: (entry) => {
+			customEntry: (entry, index, entries) => {
 				this.shownEntries.add(entry.id);
-				return customEntryUpdate(this.host, this.session, entry);
+				return customEntryUpdate(this.host, this.session, entry, queryPreview(entries, index));
 			},
 		});
 	}
